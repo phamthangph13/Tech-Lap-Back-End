@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from bson import ObjectId
 from datetime import datetime
 from marshmallow import ValidationError
-from database import products_collection, categories_collection
+from database import products_collection, categories_collection, db
 from utils.mongo_utils import format_product, save_file_to_gridfs, delete_file_from_gridfs
 from schemas.product_schema import get_product_models, ProductSchema
 import re
@@ -49,100 +49,97 @@ class ProductList(Resource):
                     if 'specs' not in data:
                         data['specs'] = {}
                     field_name = key.split('.')[1]
+                    
+                    # Handle ports list (or any other array within specs)
                     if field_name == 'ports':
-                        # Handle ports as a list
-                        ports_value = request.form.getlist(key)
-                        data['specs']['ports'] = ports_value
+                        data['specs']['ports'] = request.form.getlist(key)
                     else:
                         data['specs'][field_name] = request.form[key]
+                elif key == 'category_ids':
+                    data['category_ids'] = request.form.getlist(key)
+                elif key == 'highlights':
+                    data['highlights'] = request.form.getlist(key)
+                elif key == 'variant_specs':
+                    # Parse JSON data for variant specs
+                    try:
+                        data['variant_specs'] = json.loads(request.form[key])
+                    except json.JSONDecodeError:
+                        return {"message": "Invalid JSON format for variant_specs"}, 400
+                elif key == 'colors':
+                    # Parse JSON data for colors
+                    try:
+                        data['colors'] = json.loads(request.form[key])
+                    except json.JSONDecodeError:
+                        return {"message": "Invalid JSON format for colors"}, 400
+                elif key == 'product_info':
+                    # Parse JSON data for product info
+                    try:
+                        data['product_info'] = json.loads(request.form[key])
+                    except json.JSONDecodeError:
+                        return {"message": "Invalid JSON format for product_info"}, 400
                 else:
-                    # Handle regular fields, converting to appropriate types
-                    if key in ['price', 'discount_percent', 'stock_quantity']:
-                        data[key] = int(request.form[key])
-                    else:
-                        data[key] = request.form[key]
+                    data[key] = request.form[key]
             
-            # Handle category_ids - convert to ObjectId if valid or empty list if none
-            if 'category_ids' in request.form:
-                category_ids_raw = request.form.getlist('category_ids')
-                if category_ids_raw:
-                    category_ids = []
-                    for category_id in category_ids_raw:
-                        if not category_id or not is_valid_object_id(category_id):
-                            return {"message": f"Invalid category ID format: {category_id}"}, 400
-                        
-                        # Check if category exists
-                        category = categories_collection.find_one({"_id": ObjectId(category_id)})
-                        if not category:
-                            return {"message": f"Category with ID {category_id} not found"}, 400
-                        
-                        # Store category_ids as strings to match schema validation
-                        category_ids.append(str(ObjectId(category_id)))
-                    
-                    data['category_ids'] = category_ids
-                else:
-                    # Allow having no categories
-                    data['category_ids'] = []
+            # Validate the data
+            errors = product_schema.validate(data)
+            if errors:
+                return {"message": "Validation errors", "errors": errors}, 400
             
-            # Validate input data (excluding file fields that will be handled separately)
-            try:
-                product_schema.load(data)
-            except ValidationError as err:
-                return {"message": "Validation error", "errors": err.messages}, 400
+            # Store uploaded files
+            data['images'] = []
+            data['videos'] = []
             
-            # After validation, convert category_ids back to ObjectId for MongoDB
-            if 'category_ids' in data and data['category_ids']:
-                data['category_ids'] = [ObjectId(category_id) for category_id in data['category_ids']]
+            # Handle thumbnail
+            if 'thumbnail' in request.files:
+                thumbnail_file = request.files['thumbnail']
+                if thumbnail_file.filename:
+                    thumbnail_id = save_file_to_gridfs(thumbnail_file, thumbnail_file.filename, thumbnail_file.content_type)
+                    data['thumbnail'] = str(thumbnail_id)
             
-            # Calculate discount price
-            discount_price = data['price'] - (data['price'] * data['discount_percent'] / 100)
+            # Handle individual image files
+            image_count = int(data.get('image_count', 0))
+            for i in range(image_count):
+                image_key = f'image_{i}'
+                if image_key in request.files:
+                    image_file = request.files[image_key]
+                    if image_file.filename:
+                        image_id = save_file_to_gridfs(image_file, image_file.filename, image_file.content_type)
+                        data['images'].append(str(image_id))
             
-            # Process file uploads
-            # 1. Thumbnail (single file)
-            thumbnail_file = request.files.get('thumbnail')
-            if thumbnail_file:
-                thumbnail_id = save_file_to_gridfs(
-                    thumbnail_file.read(),
-                    filename=thumbnail_file.filename,
-                    content_type=thumbnail_file.content_type
-                )
-                data['thumbnail'] = thumbnail_id
-            
-            # 2. Images (multiple files)
-            image_files = request.files.getlist('images')
-            if image_files:
-                image_ids = []
+            # Handle individual video files
+            video_count = int(data.get('video_count', 0))
+            for i in range(video_count):
+                video_key = f'video_{i}'
+                if video_key in request.files:
+                    video_file = request.files[video_key]
+                    if video_file.filename:
+                        video_id = save_file_to_gridfs(video_file, video_file.filename, video_file.content_type)
+                        data['videos'].append(str(video_id))
+
+            # Original method (keeping for backward compatibility)
+            if 'images' in request.files:
+                image_files = request.files.getlist('images')
                 for image_file in image_files:
-                    if image_file.filename:  # Only process if a file was actually uploaded
-                        image_id = save_file_to_gridfs(
-                            image_file.read(),
-                            filename=image_file.filename,
-                            content_type=image_file.content_type
-                        )
-                        image_ids.append(image_id)
-                if image_ids:
-                    data['images'] = image_ids
+                    if image_file.filename:
+                        image_id = save_file_to_gridfs(image_file, image_file.filename, image_file.content_type)
+                        data['images'].append(str(image_id))
             
-            # 3. Videos (multiple files)
-            video_files = request.files.getlist('videos')
-            if video_files:
-                video_ids = []
+            if 'videos' in request.files:
+                video_files = request.files.getlist('videos')
                 for video_file in video_files:
-                    if video_file.filename:  # Only process if a file was actually uploaded
-                        video_id = save_file_to_gridfs(
-                            video_file.read(),
-                            filename=video_file.filename,
-                            content_type=video_file.content_type
-                        )
-                        video_ids.append(video_id)
-                if video_ids:
-                    data['videos'] = video_ids
-            
-            # Add timestamps and discount price
+                    if video_file.filename:
+                        video_id = save_file_to_gridfs(video_file, video_file.filename, video_file.content_type)
+                        data['videos'].append(str(video_id))
+
+            # Create timestamps
             now = datetime.utcnow()
             data['created_at'] = now
             data['updated_at'] = now
-            data['discount_price'] = discount_price
+            
+            # Calculate discount price
+            price = float(data['price'])
+            discount_percent = float(data['discount_percent'])
+            data['discount_price'] = price - (price * discount_percent / 100)
             
             # Insert into database
             result = products_collection.insert_one(data)
@@ -151,9 +148,11 @@ class ProductList(Resource):
             created_product = products_collection.find_one({"_id": result.inserted_id})
             
             return format_product(created_product), 201
+            
         except Exception as e:
-            return {"message": f"Error creating product: {str(e)}"}, 500
-
+            return {"message": f"Error creating product: {str(e)}"}, 400
+    
+    
 @product_ns.route('/<id>')
 @product_ns.param('id', 'The product identifier')
 @product_ns.response(404, 'Product not found')
@@ -162,204 +161,219 @@ class Product(Resource):
     @product_ns.response(200, 'Success', product_model)
     def get(self, id):
         """Get a product by ID"""
-        try:
-            if not is_valid_object_id(id):
-                return {"message": f"Invalid product ID format: {id}"}, 400
-                
-            product = products_collection.find_one({"_id": ObjectId(id)})
-            if not product:
-                return {"message": f"Product with ID {id} not found"}, 404
+        if not is_valid_object_id(id):
+            return {"message": "Invalid product ID format"}, 400
             
-            return format_product(product)
-        except Exception as e:
-            return {"message": f"Error retrieving product: {str(e)}"}, 500
+        product = products_collection.find_one({"_id": ObjectId(id)})
+        if not product:
+            return {"message": "Product not found"}, 404
+            
+        return format_product(product)
     
     @product_ns.doc('update_product')
     @product_ns.expect(product_update_parser)
     @product_ns.response(200, 'Product updated', product_model)
     @product_ns.response(400, 'Validation Error')
     def put(self, id):
-        """Update a product including file uploads"""
-        try:
-            if not is_valid_object_id(id):
-                return {"message": f"Invalid product ID format: {id}"}, 400
-                
-            product = products_collection.find_one({"_id": ObjectId(id)})
-            if not product:
-                return {"message": f"Product with ID {id} not found"}, 404
+        """Update a product with file uploads"""
+        if not is_valid_object_id(id):
+            return {"message": "Invalid product ID format"}, 400
             
-            # Get form data
-            data = {}
+        # Check if product exists
+        product = products_collection.find_one({"_id": ObjectId(id)})
+        if not product:
+            return {"message": "Product not found"}, 404
+            
+        try:
+            # Get existing product data
+            update_data = {}
+            
+            # Process form data
             for key in request.form:
                 if key.startswith('specs.'):
                     # Handle nested specs fields
-                    if 'specs' not in data:
-                        data['specs'] = {}
+                    if 'specs' not in update_data:
+                        update_data['specs'] = {}
                     field_name = key.split('.')[1]
+                    
+                    # Handle ports list (or any other array within specs)
                     if field_name == 'ports':
-                        # Handle ports as a list
-                        ports_value = request.form.getlist(key)
-                        data['specs']['ports'] = ports_value
+                        update_data['specs']['ports'] = request.form.getlist(key)
                     else:
-                        data['specs'][field_name] = request.form[key]
+                        update_data['specs'][field_name] = request.form[key]
+                elif key == 'category_ids':
+                    update_data['category_ids'] = request.form.getlist(key)
+                elif key == 'highlights':
+                    update_data['highlights'] = request.form.getlist(key)
+                elif key == 'variant_specs':
+                    # Parse JSON data for variant specs
+                    try:
+                        update_data['variant_specs'] = json.loads(request.form[key])
+                    except json.JSONDecodeError:
+                        return {"message": "Invalid JSON format for variant_specs"}, 400
+                elif key == 'colors':
+                    # Parse JSON data for colors
+                    try:
+                        update_data['colors'] = json.loads(request.form[key])
+                    except json.JSONDecodeError:
+                        return {"message": "Invalid JSON format for colors"}, 400
+                elif key == 'product_info':
+                    # Parse JSON data for product info
+                    try:
+                        update_data['product_info'] = json.loads(request.form[key])
+                    except json.JSONDecodeError:
+                        return {"message": "Invalid JSON format for product_info"}, 400
                 else:
-                    # Handle regular fields, converting to appropriate types
-                    if key in ['price', 'discount_percent', 'stock_quantity']:
-                        data[key] = int(request.form[key])
-                    else:
-                        data[key] = request.form[key]
+                    update_data[key] = request.form[key]
             
-            # Handle category_ids - convert to string for validation, then to ObjectId for storage
-            if 'category_ids' in request.form:
-                category_ids_raw = request.form.getlist('category_ids')
-                if category_ids_raw:
-                    category_ids = []
-                    for category_id in category_ids_raw:
-                        if not category_id or not is_valid_object_id(category_id):
-                            return {"message": f"Invalid category ID format: {category_id}"}, 400
-                        
-                        # Check if category exists
-                        category = categories_collection.find_one({"_id": ObjectId(category_id)})
-                        if not category:
-                            return {"message": f"Category with ID {category_id} not found"}, 400
-                        
-                        # Store as string for validation
-                        category_ids.append(str(ObjectId(category_id)))
+            # If we got price or discount_percent updates, recalculate discount_price
+            if 'price' in update_data or 'discount_percent' in update_data:
+                price = float(update_data.get('price', product.get('price', 0)))
+                discount_percent = float(update_data.get('discount_percent', product.get('discount_percent', 0)))
+                update_data['discount_price'] = price - (price * discount_percent / 100)
+            
+            # Handle file uploads
+            # Thumbnail
+            if 'thumbnail' in request.files:
+                thumbnail_file = request.files['thumbnail']
+                if thumbnail_file.filename:
+                    # Delete old thumbnail if exists
+                    old_thumbnail_id = product.get('thumbnail')
+                    if old_thumbnail_id:
+                        delete_file_from_gridfs(ObjectId(old_thumbnail_id))
                     
-                    data['category_ids'] = category_ids
-                else:
-                    # Allow removing all categories by setting to empty array
-                    data['category_ids'] = []
-                    
-            # Validate the update data
-            if data:
-                try:
-                    # Use partial=True to validate only the fields that are being updated
-                    product_schema.load(data, partial=True)
-                except ValidationError as err:
-                    return {"message": "Validation error", "errors": err.messages}, 400
-                
-                # After validation, convert category_ids back to ObjectId for MongoDB
-                if 'category_ids' in data and data['category_ids']:
-                    data['category_ids'] = [ObjectId(category_id) for category_id in data['category_ids']]
+                    # Save new thumbnail
+                    thumbnail_id = save_file_to_gridfs(thumbnail_file, thumbnail_file.filename, thumbnail_file.content_type)
+                    update_data['thumbnail'] = str(thumbnail_id)
             
-            # Process file uploads
-            # 1. Thumbnail (single file)
-            thumbnail_file = request.files.get('thumbnail')
-            if thumbnail_file and thumbnail_file.filename:
-                # Delete the old thumbnail if it exists
-                if 'thumbnail' in product and product['thumbnail']:
-                    delete_file_from_gridfs(product['thumbnail'])
-                
-                # Save the new thumbnail
-                thumbnail_id = save_file_to_gridfs(
-                    thumbnail_file.read(),
-                    filename=thumbnail_file.filename,
-                    content_type=thumbnail_file.content_type
-                )
-                data['thumbnail'] = thumbnail_id
-            
-            # 2. Images (multiple files)
-            image_files = request.files.getlist('images')
-            if image_files and any(f.filename for f in image_files):
-                # Delete old images if they exist
-                if 'images' in product and product['images']:
-                    for old_image_id in product['images']:
-                        delete_file_from_gridfs(old_image_id)
+            # Images - individual files
+            image_count = int(update_data.get('image_count', 0))
+            if image_count > 0:
+                # Delete old images
+                for old_image_id in product.get('images', []):
+                    delete_file_from_gridfs(ObjectId(old_image_id))
                 
                 # Save new images
-                image_ids = []
-                for image_file in image_files:
-                    if image_file.filename:  # Only process if a file was actually uploaded
-                        image_id = save_file_to_gridfs(
-                            image_file.read(),
-                            filename=image_file.filename,
-                            content_type=image_file.content_type
-                        )
-                        image_ids.append(image_id)
-                if image_ids:
-                    data['images'] = image_ids
+                new_images = []
+                for i in range(image_count):
+                    image_key = f'image_{i}'
+                    if image_key in request.files:
+                        image_file = request.files[image_key]
+                        if image_file.filename:
+                            image_id = save_file_to_gridfs(image_file, image_file.filename, image_file.content_type)
+                            new_images.append(str(image_id))
+                
+                update_data['images'] = new_images
             
-            # 3. Videos (multiple files)
-            video_files = request.files.getlist('videos')
-            if video_files and any(f.filename for f in video_files):
-                # Delete old videos if they exist
-                if 'videos' in product and product['videos']:
-                    for old_video_id in product['videos']:
-                        delete_file_from_gridfs(old_video_id)
+            # Videos - individual files
+            video_count = int(update_data.get('video_count', 0))
+            if video_count > 0:
+                # Delete old videos
+                for old_video_id in product.get('videos', []):
+                    delete_file_from_gridfs(ObjectId(old_video_id))
                 
                 # Save new videos
-                video_ids = []
-                for video_file in video_files:
-                    if video_file.filename:  # Only process if a file was actually uploaded
-                        video_id = save_file_to_gridfs(
-                            video_file.read(),
-                            filename=video_file.filename,
-                            content_type=video_file.content_type
-                        )
-                        video_ids.append(video_id)
-                if video_ids:
-                    data['videos'] = video_ids
+                new_videos = []
+                for i in range(video_count):
+                    video_key = f'video_{i}'
+                    if video_key in request.files:
+                        video_file = request.files[video_key]
+                        if video_file.filename:
+                            video_id = save_file_to_gridfs(video_file, video_file.filename, video_file.content_type)
+                            new_videos.append(str(video_id))
+                
+                update_data['videos'] = new_videos
             
-            # Update discount price if price or discount percent changed
-            if ('price' in data or 'discount_percent' in data):
-                price = data.get('price', product['price'])
-                discount_percent = data.get('discount_percent', product['discount_percent'])
-                data['discount_price'] = price - (price * discount_percent / 100)
+            # Original methods (keeping for backward compatibility)
+            # Images
+            if 'images' in request.files:
+                image_files = request.files.getlist('images')
+                if image_files and image_files[0].filename:
+                    # If there are valid image files, we'll replace all images
+                    # Delete old images
+                    for old_image_id in product.get('images', []):
+                        delete_file_from_gridfs(ObjectId(old_image_id))
+                    
+                    # Save new images
+                    new_images = []
+                    for image_file in image_files:
+                        if image_file.filename:
+                            image_id = save_file_to_gridfs(image_file, image_file.filename, image_file.content_type)
+                            new_images.append(str(image_id))
+                    
+                    update_data['images'] = new_images
             
-            # Update timestamp
-            data['updated_at'] = datetime.utcnow()
+            # Videos
+            if 'videos' in request.files:
+                video_files = request.files.getlist('videos')
+                if video_files and video_files[0].filename:
+                    # If there are valid video files, we'll replace all videos
+                    # Delete old videos
+                    for old_video_id in product.get('videos', []):
+                        delete_file_from_gridfs(ObjectId(old_video_id))
+                    
+                    # Save new videos
+                    new_videos = []
+                    for video_file in video_files:
+                        if video_file.filename:
+                            video_id = save_file_to_gridfs(video_file, video_file.filename, video_file.content_type)
+                            new_videos.append(str(video_id))
+                    
+                    update_data['videos'] = new_videos
             
-            # Update product in database
+            # Set updated timestamp
+            update_data['updated_at'] = datetime.utcnow()
+            
+            # Update in database
             products_collection.update_one(
                 {"_id": ObjectId(id)},
-                {"$set": data}
+                {"$set": update_data}
             )
             
-            # Get updated product
+            # Get the updated product
             updated_product = products_collection.find_one({"_id": ObjectId(id)})
             
             return format_product(updated_product)
+            
         except Exception as e:
-            return {"message": f"Error updating product: {str(e)}"}, 500
+            return {"message": f"Error updating product: {str(e)}"}, 400
     
     @product_ns.doc('delete_product')
     @product_ns.response(204, 'Product deleted')
     def delete(self, id):
-        """Delete a product and its files"""
-        try:
-            if not is_valid_object_id(id):
-                return {"message": f"Invalid product ID format: {id}"}, 400
+        """Delete a product"""
+        if not is_valid_object_id(id):
+            return {"message": "Invalid product ID format"}, 400
             
-            # Get the product first to retrieve file IDs
-            product = products_collection.find_one({"_id": ObjectId(id)})
-            if not product:
-                return {"message": f"Product with ID {id} not found"}, 404
-            
-            # Delete associated files from GridFS
-            
-            # 1. Thumbnail
-            if 'thumbnail' in product and product['thumbnail']:
-                delete_file_from_gridfs(product['thumbnail'])
-            
-            # 2. Images
-            if 'images' in product and product['images']:
-                for image_id in product['images']:
-                    delete_file_from_gridfs(image_id)
-            
-            # 3. Videos
-            if 'videos' in product and product['videos']:
-                for video_id in product['videos']:
-                    delete_file_from_gridfs(video_id)
-            
-            # Delete the product from the collection
-            result = products_collection.delete_one({"_id": ObjectId(id)})
-            
-            return "", 204
-        except Exception as e:
-            return {"message": f"Error deleting product: {str(e)}"}, 500
+        # Get product to delete its files
+        product = products_collection.find_one({"_id": ObjectId(id)})
+        if not product:
+            return {"message": "Product not found"}, 404
+        
+        # Delete all associated files (thumbnail, images, videos)
+        # Thumbnail
+        if 'thumbnail' in product and product['thumbnail']:
+            delete_file_from_gridfs(ObjectId(product['thumbnail']))
+        
+        # Images - individual files
+        image_count = int(product.get('image_count', 0))
+        for i in range(image_count):
+            image_key = f'image_{i}'
+            if image_key in product:
+                delete_file_from_gridfs(ObjectId(product[image_key]))
+        
+        # Videos - individual files
+        video_count = int(product.get('video_count', 0))
+        for i in range(video_count):
+            video_key = f'video_{i}'
+            if video_key in product:
+                delete_file_from_gridfs(ObjectId(product[video_key]))
+        
+        # Delete product
+        products_collection.delete_one({"_id": ObjectId(id)})
+        
+        return "", 204
 
-# Add routes for serving files
 @product_ns.route('/files/<file_id>')
 @product_ns.param('file_id', 'The file identifier in GridFS')
 class ProductFile(Resource):
@@ -367,26 +381,84 @@ class ProductFile(Resource):
     @product_ns.response(200, 'Success')
     @product_ns.response(404, 'File not found')
     def get(self, file_id):
-        """Get a file from GridFS by ID"""
-        from flask import send_file, abort
+        """Get a product file (image/video) by ID"""
+        from flask import send_file
+        from gridfs import GridFS
         from io import BytesIO
-        from utils.mongo_utils import get_file_from_gridfs
+        from database import db
+        
+        # Use the existing database connection
+        fs = GridFS(db)
+        
+        print(f"GET request for file: {file_id}, DB name: {db.name}")
         
         if not is_valid_object_id(file_id):
-            return {"message": f"Invalid file ID format: {file_id}"}, 400
+            print(f"Invalid file ID format: {file_id}")
+            return {"message": "Invalid file ID format"}, 400
         
-        grid_out = get_file_from_gridfs(file_id)
-        if grid_out is None:
-            return {"message": f"File with ID {file_id} not found"}, 404
+        try:
+            # Check if file exists first
+            if not fs.exists(ObjectId(file_id)):
+                print(f"File does not exist: {file_id}")
+                return {"message": "File not found"}, 404
+                
+            # Get file by ObjectId
+            file_data = fs.get(ObjectId(file_id))
+            print(f"File found: {file_id}, name: {file_data.filename}, content-type: {file_data.content_type}")
+            
+            # Create BytesIO object
+            file_obj = BytesIO(file_data.read())
+            
+            # Get content type
+            content_type = file_data.content_type or 'application/octet-stream'
+            
+            # Send file
+            return send_file(
+                file_obj,
+                mimetype=content_type,
+                as_attachment=False,
+                download_name=file_data.filename
+            )
+        except Exception as e:
+            print(f"Error fetching file {file_id}: {str(e)}")
+            return {"message": f"Error fetching file: {str(e)}"}, 404
+            
+    @product_ns.doc('head_file')
+    @product_ns.response(200, 'File exists')
+    @product_ns.response(404, 'File not found')
+    def head(self, file_id):
+        """Check if a file exists and get its metadata"""
+        from flask import Response
+        from gridfs import GridFS
+        from database import db
         
-        # Create a BytesIO object and send it as a file
-        data = grid_out.read()
-        mem = BytesIO(data)
-        mem.seek(0)
+        # Use the existing database connection
+        fs = GridFS(db)
         
-        return send_file(
-            mem,
-            mimetype=grid_out.content_type,
-            as_attachment=True,
-            download_name=grid_out.filename
-        ) 
+        print(f"HEAD request for file: {file_id}, DB name: {db.name}")
+        
+        if not is_valid_object_id(file_id):
+            print(f"Invalid file ID format: {file_id}")
+            return Response(status=400)
+        
+        try:
+            # Check if file exists
+            if not fs.exists(ObjectId(file_id)):
+                print(f"File does not exist: {file_id}")
+                return Response(status=404)
+                
+            # Get file metadata
+            file_data = fs.get(ObjectId(file_id))
+            print(f"File found: {file_id}, name: {file_data.filename}, content-type: {file_data.content_type}, length: {file_data.length}")
+            
+            # Create response with appropriate headers
+            response = Response(status=200)
+            response.headers['Content-Type'] = file_data.content_type or 'application/octet-stream'
+            response.headers['Content-Length'] = str(file_data.length)
+            if file_data.filename:
+                response.headers['Content-Disposition'] = f'inline; filename="{file_data.filename}"'
+            
+            return response
+        except Exception as e:
+            print(f"Error checking file {file_id}: {str(e)}")
+            return Response(status=404) 

@@ -23,6 +23,26 @@ def get_product_models(api):
         'ports': fields.List(fields.String, required=True, description='Available ports', example=['USB-C', 'HDMI', '3.5mm Audio'])
     })
     
+    variant_spec_model = api.model('VariantSpec', {
+        'name': fields.String(required=True, description='Variant name', example='High Performance'),
+        'specs': fields.Nested(specs_model, required=True, description='Variant specifications'),
+        'price': fields.Integer(required=True, description='Variant price', example=40000000),
+        'discount_percent': fields.Integer(required=True, description='Variant discount percentage', example=5)
+    })
+    
+    color_model = api.model('Color', {
+        'name': fields.String(required=True, description='Color name', example='Space Gray'),
+        'code': fields.String(required=True, description='Color code (hex)', example='#8c8c8c'),
+        'price_adjustment': fields.Integer(required=False, description='Price adjustment for this color', example=500000),
+        'discount_adjustment': fields.Integer(required=False, description='Discount adjustment for this color', example=0),
+        'images': fields.List(fields.String, description='Image file IDs for this color', required=False)
+    })
+    
+    product_info_model = api.model('ProductInfo', {
+        'title': fields.String(required=True, description='Info title', example='Warranty'),
+        'content': fields.String(required=True, description='Info content', example='12 months manufacturer warranty')
+    })
+    
     product_model = api.model('Product', {
         '_id': fields.String(description='Product ID'),
         'name': fields.String(required=True, description='Product name', example='Laptop Dell XPS 15'),
@@ -32,11 +52,16 @@ def get_product_models(api):
         'discount_percent': fields.Integer(required=True, description='Discount percentage', example=10),
         'discount_price': fields.Integer(description='Price after discount', example=31500000),
         'specs': fields.Nested(specs_model, required=True, description='Product specifications'),
+        'variant_specs': fields.List(fields.Nested(variant_spec_model), description='Variant specifications', required=False),
+        'colors': fields.List(fields.Nested(color_model), description='Available colors', required=False),
         'stock_quantity': fields.Integer(required=True, description='Available stock', example=50),
         'category_ids': fields.List(fields.String, description='Category IDs', example=['6600a1c3b6f4a2d4e8f3b130'], required=False),
         'thumbnail': fields.String(description='Thumbnail file ID', required=False),
         'images': fields.List(fields.String, description='Image file IDs', required=False),
         'videos': fields.List(fields.String, description='Video file IDs', required=False),
+        'product_info': fields.List(fields.Nested(product_info_model), description='Product information', required=False),
+        'highlights': fields.List(fields.String, description='Product highlights', example=['Ultra-thin design', 'All-day battery life'], required=False),
+        'short_description': fields.String(description='Short product description', example='Premium ultrabook for professionals', required=False),
         'created_at': fields.DateTime(description='Creation timestamp'),
         'updated_at': fields.DateTime(description='Last update timestamp'),
         'status': fields.String(description='Product status', enum=['available', 'sold_out', 'discontinued'], example='available', required=False)
@@ -59,7 +84,9 @@ def get_product_models(api):
         'specs.ports': fields.List(fields.String, required=True, description='Available ports', example=['USB-C', 'HDMI', '3.5mm Audio']),
         'stock_quantity': fields.Integer(required=True, description='Available stock', example=50),
         'category_ids': fields.List(fields.String, description='Category IDs', example=['6600a1c3b6f4a2d4e8f3b130'], required=False),
-        'status': fields.String(description='Product status', enum=['available', 'sold_out', 'discontinued'], example='available', required=False)
+        'status': fields.String(description='Product status', enum=['available', 'sold_out', 'discontinued'], example='available', required=False),
+        'short_description': fields.String(description='Short product description', required=False),
+        'highlights': fields.List(fields.String, description='Product highlights', required=False)
     })
     
     # Create file upload parsers
@@ -107,6 +134,11 @@ def get_product_models(api):
     product_form_parser.add_argument('thumbnail', location='files', type=FileStorage, required=False, help='Thumbnail image file')
     product_form_parser.add_argument('images', location='files', type=FileStorage, required=False, action='append', help='Product image files')
     product_form_parser.add_argument('videos', location='files', type=FileStorage, required=False, action='append', help='Product video files')
+    product_form_parser.add_argument('short_description', location='form', required=False, help='Short product description')
+    product_form_parser.add_argument('highlights', location='form', required=False, action='append', help='Product highlights (can specify multiple times)')
+    product_form_parser.add_argument('variant_specs', location='form', required=False, help='Variant specifications in JSON format')
+    product_form_parser.add_argument('colors', location='form', required=False, help='Available colors in JSON format')
+    product_form_parser.add_argument('product_info', location='form', required=False, help='Product information in JSON format')
     
     # For product updates
     product_update_model = api.model('ProductUpdate', {
@@ -116,8 +148,13 @@ def get_product_models(api):
         'price': fields.Integer(description='Original price'),
         'discount_percent': fields.Integer(description='Discount percentage'),
         'specs': fields.Nested(specs_model, description='Product specifications'),
+        'variant_specs': fields.List(fields.Nested(variant_spec_model), description='Variant specifications'),
+        'colors': fields.List(fields.Nested(color_model), description='Available colors'),
         'stock_quantity': fields.Integer(description='Available stock'),
         'category_ids': fields.List(fields.String, description='Category IDs'),
+        'product_info': fields.List(fields.Nested(product_info_model), description='Product information'),
+        'highlights': fields.List(fields.String, description='Product highlights'),
+        'short_description': fields.String(description='Short product description'),
         'status': fields.String(description='Product status', enum=['available', 'sold_out', 'discontinued'])
     })
     
@@ -142,6 +179,11 @@ def get_product_models(api):
     product_update_parser.add_argument('thumbnail', location='files', type=FileStorage, required=False, help='Thumbnail image file')
     product_update_parser.add_argument('images', location='files', type=FileStorage, required=False, action='append', help='Product image files')
     product_update_parser.add_argument('videos', location='files', type=FileStorage, required=False, action='append', help='Product video files')
+    product_update_parser.add_argument('short_description', location='form', required=False, help='Short product description')
+    product_update_parser.add_argument('highlights', location='form', required=False, action='append', help='Product highlights (can specify multiple times)')
+    product_update_parser.add_argument('variant_specs', location='form', required=False, help='Variant specifications in JSON format')
+    product_update_parser.add_argument('colors', location='form', required=False, help='Available colors in JSON format')
+    product_update_parser.add_argument('product_info', location='form', required=False, help='Product information in JSON format')
     
     return product_model, product_input_model, product_form_parser, product_update_model, product_update_parser
 
@@ -159,6 +201,32 @@ class SpecsSchema(Schema):
     os = ma_fields.String(required=True)
     ports = ma_fields.List(ma_fields.String(), required=True)
 
+class VariantSpecSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+    
+    name = ma_fields.String(required=True)
+    specs = ma_fields.Nested(SpecsSchema, required=True)
+    price = ma_fields.Integer(required=True, validate=validate.Range(min=0))
+    discount_percent = ma_fields.Integer(required=True, validate=validate.Range(min=0, max=100))
+
+class ColorSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+    
+    name = ma_fields.String(required=True)
+    code = ma_fields.String(required=True)
+    price_adjustment = ma_fields.Integer(required=False, default=0)
+    discount_adjustment = ma_fields.Integer(required=False, default=0)
+    images = ma_fields.List(ma_fields.String(), required=False, default=[])
+
+class ProductInfoSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+    
+    title = ma_fields.String(required=True)
+    content = ma_fields.String(required=True)
+
 class ProductSchema(Schema):
     class Meta:
         unknown = EXCLUDE  # Ignore unknown fields
@@ -169,6 +237,11 @@ class ProductSchema(Schema):
     price = ma_fields.Integer(required=True, validate=validate.Range(min=0))
     discount_percent = ma_fields.Integer(required=True, validate=validate.Range(min=0, max=100))
     specs = ma_fields.Nested(SpecsSchema, required=True)
+    variant_specs = ma_fields.List(ma_fields.Nested(VariantSpecSchema), required=False, default=[])
+    colors = ma_fields.List(ma_fields.Nested(ColorSchema), required=False, default=[])
     stock_quantity = ma_fields.Integer(required=True, validate=validate.Range(min=0))
     category_ids = ma_fields.List(ma_fields.String(), required=False, default=[])
+    product_info = ma_fields.List(ma_fields.Nested(ProductInfoSchema), required=False, default=[])
+    highlights = ma_fields.List(ma_fields.String(), required=False, default=[])
+    short_description = ma_fields.String(required=False)
     status = ma_fields.String(validate=validate.OneOf(['available', 'sold_out', 'discontinued']), required=False, default='available') 
