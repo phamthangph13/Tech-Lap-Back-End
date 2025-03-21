@@ -1,0 +1,7 @@
+flask==2.3.3
+flask-restx==1.1.0
+pymongo==4.5.0
+python-dotenv==1.0.0
+marshmallow==3.20.1
+Werkzeug==2.3.7
+flask-cors==4.0.0 
