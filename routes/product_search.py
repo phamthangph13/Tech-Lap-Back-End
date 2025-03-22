@@ -105,8 +105,55 @@ class ProductSearch(Resource):
         
         # Category filter
         if args.category_ids:
-            category_ids = [ObjectId(cat_id.strip()) for cat_id in args.category_ids.split(',') if ObjectId.is_valid(cat_id.strip())]
-            query['category_ids'] = {'$in': category_ids}
+            try:
+                print(f"Category IDs received: {args.category_ids}")
+                # First try to convert to ObjectId, and if that fails, use as string
+                category_ids_obj = []
+                category_ids_str = []
+                
+                for cat_id in args.category_ids.split(','):
+                    cat_id = cat_id.strip()
+                    try:
+                        if ObjectId.is_valid(cat_id):
+                            # Keep both ObjectId and string version for query
+                            category_ids_obj.append(ObjectId(cat_id))
+                            category_ids_str.append(cat_id)
+                            print(f"Added valid ObjectId: {cat_id}")
+                        else:
+                            # If not a valid ObjectId, use as string (for test/dev environments)
+                            category_ids_str.append(cat_id)
+                            print(f"Using category ID as string: {cat_id}")
+                    except Exception as e:
+                        print(f"Error converting category ID {cat_id}: {str(e)}")
+                        # Keep the original ID as a fallback
+                        category_ids_str.append(cat_id)
+                
+                print(f"Looking for ObjectIds: {category_ids_obj}")
+                print(f"Looking for string IDs: {category_ids_str}")
+                
+                if category_ids_obj or category_ids_str:
+                    # Check for EITHER string IDs or ObjectIds
+                    or_conditions = []
+                    
+                    # Add ObjectId condition if we have any
+                    if category_ids_obj:
+                        or_conditions.append({'category_ids': {'$in': category_ids_obj}})
+                    
+                    # Add string ID condition if we have any
+                    if category_ids_str:
+                        or_conditions.append({'category_ids': {'$in': category_ids_str}})
+                    
+                    # Use $or to check both conditions
+                    if len(or_conditions) > 1:
+                        query['$or'] = or_conditions
+                    else:
+                        # Just one type of ID to check
+                        query['category_ids'] = {'$in': category_ids_obj or category_ids_str}
+                    
+                    print(f"Final query part for categories: {query.get('$or') or query.get('category_ids')}")
+            except Exception as e:
+                print(f"Error in category filter: {str(e)}")
+                # Don't add category filter if there's an error
         
         # Status filter
         if args.status:

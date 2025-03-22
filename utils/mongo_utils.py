@@ -43,6 +43,11 @@ def format_product(product):
     if 'category_id' in product and product['category_id']:
         product['category_id'] = str(product['category_id'])
     
+    # Handle category_ids array
+    if 'category_ids' in product and product['category_ids']:
+        product['category_ids'] = [str(cat_id) if isinstance(cat_id, ObjectId) else cat_id 
+                                   for cat_id in product['category_ids']]
+    
     if 'thumbnail' in product and product['thumbnail']:
         product['thumbnail'] = str(product['thumbnail'])
     
