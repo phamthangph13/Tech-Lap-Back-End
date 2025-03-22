@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from routes.product_routes import product_ns
 from routes.category_routes import category_ns
 from routes.product_search import search_ns
+from routes.order_routes import order_ns
 from utils.mongo_utils import MongoJSONEncoder
 import json
 
@@ -44,6 +45,7 @@ def output_json(data, code, headers=None):
 api.add_namespace(product_ns, path="/api/products")
 api.add_namespace(category_ns, path="/api/categories")
 api.add_namespace(search_ns, path="/api/product-search")
+api.add_namespace(order_ns, path="/api/orders")
 
 if __name__ == "__main__":
     app.run(debug=True) 

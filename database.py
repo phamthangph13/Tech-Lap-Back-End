@@ -15,4 +15,5 @@ db = client[db_name]
 
 # Collections
 products_collection = db.products
-categories_collection = db.categories 
+categories_collection = db.categories
+orders_collection = db.orders 

@@ -16,6 +16,21 @@ class MongoJSONEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super(MongoJSONEncoder, self).default(obj)
 
+def object_id_to_str(obj_id):
+    """Convert ObjectId to string if it's an ObjectId, otherwise return as is."""
+    if isinstance(obj_id, ObjectId):
+        return str(obj_id)
+    return obj_id
+
+def str_to_object_id(id_str):
+    """Convert string to ObjectId if it's a valid ObjectId string, otherwise return as is."""
+    try:
+        if isinstance(id_str, str):
+            return ObjectId(id_str)
+        return id_str
+    except:
+        return id_str
+
 def parse_json(data):
     """Convert MongoDB data types to JSON-serializable types."""
     for key, value in data.items():
